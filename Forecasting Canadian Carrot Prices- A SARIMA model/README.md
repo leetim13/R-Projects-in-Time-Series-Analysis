@@ -1,0 +1,1 @@
+This report specifically deals with the forecasting and prediction of Canadian carrot prices for the next twelve observations (i.e., predicting the carrot prices for the next 12 months) using various time series models. Different models have been fitted to the collected data and each model's limitations and weaknesses will be further evaluated and discussed.
