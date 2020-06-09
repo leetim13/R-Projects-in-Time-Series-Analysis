@@ -74,32 +74,62 @@ As we can see from the plots above, the ACF cuts off at lag 1 suggesting a `MA(1
 
 ```{r echo=T, message=FALSE, fig.height=4, fig.width=5}
 library(astsa)
-sarima(remainder, 2,0,0) #AR(2)
+AR_2_model = arima(remainder, order= c(2,0,0))
+sarima(remainder, 2,0,0) #AR(2) for diagnostics okit
 ```
 
 First, we can see from the ACF plot of the residuals that they are all within the 95% confidence intervals, indicating that there is no correlation between the residuals (suggesting a good fit of the model). The Normal Q-Q plot suggests that there are a few outliers (on both end of the tails), making the normality of the residuals to be slightly violated (but the bulk of the residuals are still following a Normal distribution). All p-values of the Ljung-Box test are all above the 5% confidence level (blue dashed line), indicating that the model has no serial correlation with 95% confidence level. Finally, the AIC value for the AR(2) model is 11.676, AICc is 11.677, and BIC is 11.753 and we will compare these values with our next potential model, the MA(1) model.
 
 \newpage
 
-Diagnositics for MA(1) model:
+# Diagnositics for MA(1) model:
 
 
 ```{r echo=T, message=FALSE,fig.height=4, fig.width=5}
+MA_1_model = arima(remainder, order= c(0,0,1))
 sarima(remainder, 0,0,1) #MA(1)
 ```
 
 Now, we can see from the ACF plot of the residuals for the MA(1) model that they are all within the 95% confidence intervals too, indicating that there is no correlation between the residuals (suggesting a good fit of the model). The Normal Q-Q plot suggests that there are a few extreme outliers like the AR(2) model (on both end of the tails), making the normality of the residuals to be slightly violated (but the bulk of the residuals are still following a Normal distribution). All p-values of the Ljung-Box test are all above the 5% confidence level (blue dashed line) as well, indicating that the model has no serial correlation with a 95% confidence level. Finally, the AIC value for the MA(1) model is 11.668, AICc is 11.669, and BIC is 11.727, which is all better than that of the AR(2) model, making this model a more preferable choice out of the two.
 
+# Model Adequacy Test of residuals for the two models:
+```{r}
+Box.test(MA_1_model$resid, lag = 24, type = c("Ljung-Box"), fitdf = 8)$p.value
+
+Box.test(AR_2_model$resid, lag = 24, type = c("Ljung-Box"), fitdf = 8)$p.value
+```
+We can see that the p-values of both models passed the (Ljung-Box) model adequacy test at the 95% confidence level, which is consistent to what we have concluded by visual inspection of the diagnositic plots. In other words, we failed to reject the null-hypothesis that the data (residuals) are independently distributed, i.e., we have enough evidence to conclude that there is no serial correlations (of the residuals) for both models.
+
+
 \newpage
 
 # Further Analysis 
 
-However, based on the random walk and integrated behavior of the ACF of our `original series`, it is also sensible to perform `log`-differencing to the original time series (rather than just doing a classical decomposition). Applying the natural `log` transformation will also help make the variance of the original series to be more consistent as the original series has an exponential growth rate. First order differencing would also account for the potential seasonality presented in our series (which is very likely to be yearly difference). I will then compare the AIC/BIC again for the log-differenced series the MA(1) model of the remainder series with the same `astsa::sarima()` function to ensure consistency across results. The plots generated for the log differencing would be as follows:
+However, rather than simply using the classical decomposition, I will also attempt to do some transformations and/or differencing on the original time series directly to deal with non-stationarity directly. A Box-Cox transformation (Box, G. E. P. and Cox, D. R. (1964) An analysis of transformations. JRSS B 26 211-246.) to derive an appropriate $\lambda$ value is done as follows:
+
+```{r}
+library(MASS)
+par(cex=0.8)
+box_cox_transformation<-boxcox(ts~1, lambda=seq(-1,1,0.1))
+y_values<-as.numeric(box_cox_transformation$y)
+lambda<-box_cox_transformation$x[which.max(y_values)]
+abline(v=lambda, col=2, lty="dashed")
+text(lambda+0.05,max(box_cox_transformation$y), round(lambda,2), cex=0.85)
+title(expression(paste("The ML estimate of ", lambda )), cex=0.85)
+lambda #lambda value
+```
+| $\lambda$ value | Appropriate Transformation |
+|-----------------|----------------------------- |
+| $\lambda = 1$ | No substantive transformation |
+| $\lambda = 0.5$ | Square root plus linear transformation |
+| $\lambda = 0$ | Natural Log |
+| $\lambda = -1$ | Inverse plus 1 |
+
+From the $\lambda$ value we obtained above, the Box-Cox transformation method suggests that no further transformations are needed. However, based on the random walk and integrated behavior of the ACF of our `original series`, I think it is also sensible to perform `log`-differencing to the original time series (rather than just doing a classical decomposition). Applying the natural `log` transformation will also help make the variance of the original series to be more consistent as the original series has an exponential or geometric-like growth rate. First order differencing would also account for the potential seasonality presented in our series (which is very likely to be yearly difference). I will then compare the AIC/BIC again for the log-differenced series the MA(1) model of the remainder series with the same `astsa::sarima()` function to ensure consistency across results. The plots generated for the log differencing would be as follows:
 
 ```{r, echo=T, message=FALSE,fig.height=4, fig.width=5}
 log_diff = diff(log(ts))
 plot(log_diff, main="Plot of log differenced series")
-
 ```
 
 ```{r, echo=T, message=FALSE,fig.height=4, fig.width=5}
@@ -115,9 +145,11 @@ First, we could see that the log-differenced plot behaves like a stationary mode
 
 ```{r echo=T, message=FALSE, results='hide'}
 sarima(log_diff,0,0,2,1,0,0,12)
+sarima_model <- Arima(log_diff, order=c(0,0,2), seasonal=c(1,0,0))
+Box.test(sarima_model$resid, lag = 24, type = c("Ljung-Box"), fitdf = 8)$p.value
 ```
 
-We can see from the ACF plot of the residuals are all within the 95% confidence intervals, indicating that there is no correlation between the residuals (suggesting a good fit of the model). The Normal Q-Q plot also behaves a lot better than the previous A2(2) or MA(1) model suggested from the classical decomposition, as there are no more visible outliers. The p-values are also all above the 5% confidence level (blue dashed line) as well, indicating that the model has no serial correlation with a 95% confidence level. Finally, the AIC value is -5.03, AICc is -5.02, and BIC is -4.92998, which is also all significantly better than the previous MA(1) model. Hence, this model behaves the best from all 3 models in terms of diagnositic plots and AIC/BIC values. So, I will attempt to perform the 12-step-ahead forecast using this model.
+We can see from the ACF plot of the residuals are all within the 95% confidence intervals, indicating that there is no correlation between the residuals (suggesting a good fit of the model). The Normal Q-Q plot also behaves a lot better than the previous A2(2) or MA(1) model suggested from the classical decomposition, as there are no more visible outliers. The p-values are also all above the 5% confidence level (blue dashed line) as well, indicating that the model has no serial correlation with a 95% confidence level. This is also reinforced by the Ljung-Box model adequacy test as we have a p-value of 0.5447, to conlcude that the residuals are not serially correlated at the 95% confidence level. Finally, the AIC value is -5.03, AICc is -5.02, and BIC is -4.92998, which is also all significantly better than the previous MA(1) model. Hence, this model behaves the best from all 3 models in terms of diagnositic plots and AIC/BIC values. So, I will attempt to perform the 12-step-ahead forecast using this model.
 
 # Forecast (in `log` scale) using `sarima.for()`  :
 ```{r echo =T , message=FALSE, results='hide'}
