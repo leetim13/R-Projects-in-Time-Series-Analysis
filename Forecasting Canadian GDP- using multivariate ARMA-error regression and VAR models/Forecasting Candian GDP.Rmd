@@ -46,7 +46,7 @@ library(forecast)
 acf(retail_GDP)
 pacf(retail_GDP)
 ```
-We can see that the ACF plot tails off very slowly like that of a random walk process, indicating non-stationarity.
+We can see that the ACF plot tails off very slowly like that of a `random walk process`, indicating non-stationarity. This suggests that further transformations would have to been done (i.e. classical decomposition or log-differencing, etc.) if we were to work directly with the original time series of `retail GDP` using models such as `(S)ARIMA()`. Hence, I have decided to first preceed with a multivariate `VAR` model with `Real GDP` as the other variable for this bivariate series. 
 
 \newpage
 
