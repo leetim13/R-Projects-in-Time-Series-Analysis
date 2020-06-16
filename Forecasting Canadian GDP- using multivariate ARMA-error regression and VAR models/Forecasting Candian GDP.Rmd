@@ -1,0 +1,268 @@
+---
+title: "Forecasting Canadian GDP: a multivariate ARMA-error regression model"
+author: "Timothy Lee"
+date: "2020/6/9"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Intro
+This report is part of October 2019's [Statistics Canada: Business Data Scientist Challenge](https://www.statcan.gc.ca/eng/cder/announcements). The goal of this challenge is to create timely estimates of current GDP based on other, more readily available information; (also referred to as `nowcasting`). For simplicity, I have chosen to only work on the Sector/Industry Group of `Retail Trade`, where the data is obtained [StatCan Table: 36-10-0208-01](https://www150.statcan.gc.ca/t1/tbl1/en/cv.action?pid=3610020801) called “Multifactor productivity, value-added, capital input and labour input in the aggregate business sector and major sub-sectors, by industry”. The data is also selected with selected with the `North American Industry Classification System (NAICS)` filter and contains annual data from 1961-2018 for a range of economic variables, such as `Labour Productivity`, `Capital Productivity`, `Multifactor Productivity`, etc.
+
+```{r, message=F, warning=F}
+library(cansim)
+library(tidyverse)
+
+retail_real_GDP = get_cansim_vector( "v41712939", start_time = "1961-01-01", 
+                                     end_time = "2018-12-01") %>% pull(VALUE) %>% 
+  ts( start = 1961, end = 2018)
+#start 1961, ends in 2018
+
+#(nominal)
+retail_GDP = get_cansim_vector( "v41713160", start_time = "1961-01-01",
+                                end_time = "2016-12-01") %>% pull(VALUE) %>%
+  ts(start = 1961, end = 2016)
+#start 1961, ends in 2016
+
+```
+
+# Plot of the (nominal) GDP series for `retail trade` sector:
+
+```{r, message=F, warning=F}
+library(tseries)
+plot(retail_GDP, main= "Plot of (nomial) GDP series")
+adf.test(retail_GDP)
+```
+As we can see just from the plot of the original series above, there is evidence of a strong increasing trend. The Augmented Dickey-Fuller Test (ADF test) also shows a high p-value of 0.9192, which fails to reject the null hypothesis of the series being integrated at the 95% confidence level. In other words, we can conclude that the original series is most likely to be integrated and not stationary at the 95% confidence level. Below are the PACF and ACF plots to reinforce this conclusion:
+
+```{r}
+library(forecast)
+acf(retail_GDP)
+pacf(retail_GDP)
+```
+We can see that the ACF plot tails off very slowly like that of a random walk process, indicating non-stationarity.
+
+\newpage
+
+# Fitting a VAR(1) model using `VARselect()`:
+```{r, message=F, warning=F}
+library(vars)
+Y = cbind(retail_GDP, retail_real_GDP)
+Y_intersect = ts.intersect(retail_GDP, retail_real_GDP) #combining two ts
+
+VARselect(Y_intersect) #choose which order of VAR(p)
+
+VAR1_model = VAR(type = c("both"),Y_intersect, p=1) 
+#type = c("const", "trend", "both", "none")
+VAR1_model 
+
+coeff = Bcoef(VAR1_model)
+coeff #coefficients matrix of VAR1_model
+
+squared_matrix = coeff[1:2, 1:2] #removing constant and trend
+squared_matrix
+
+eigen = eigen(squared_matrix) 
+eigen_values = eigen$values
+eigen_values
+
+mod_eigen = Mod(eigen_values) #mod of eigen values
+mod_eigen
+
+#Using VARS:roots() function to check eigen values again
+roots = roots(VAR1_model)
+roots #eigen value all <= |1|
+```
+Now, I have fitted a bivariate VAR(1) model on both `(nominal) GDP` and `Real GDP`, without any transformation on the series, and includes both a constant and trend term in this model. Based on the coefficient matrix and its corresponding eigen values, we can see that both eigenvalues ($0.941547$, $0.883241$), are all less than 1, so this `VAR(1)` model is casual/stationary. 
+
+Mathematically, the $VAR(1)$ model fitted could be defined as follows:
+
+$$
+\begin{aligned}
+        \begin{bmatrix}
+           retail\_GDP_{t} \\
+           real\_GDP_{t} \\
+         \end{bmatrix} =
+        \begin{bmatrix}
+           X_{1,t} \\
+           X_{2,t} \\
+         \end{bmatrix} = 
+    \begin{bmatrix} 
+       8.310143e-01 &  192.0102401\\
+        -3.006489e-05& 0.9937737\\
+    \end{bmatrix}       
+        \begin{bmatrix}
+           X_{1,t-1} \\
+           X_{2,t-1} \\
+         \end{bmatrix}  +
+     \begin{bmatrix}
+           U_t \\
+          V_t  \\
+     \end{bmatrix}  
+\end{aligned}
+$$
+, where $U_t, V_t$ are `WNs`.
+
+
+\newpage
+
+
+# Plot of residuals and their ACF/CCF 
+```{r message=FALSE, warning=FALSE, fig.height = 6}
+plot(VAR1_model) 
+#ACF/CCF plot of residuals(VAR1_model)
+acf(resid(VAR1_model))
+
+fitted_values = fitted(VAR1_model)
+fitted_values_nominal= fitted_values[,1] #predicted/fitted values for nominal
+
+library(Metrics)
+length(retail_GDP) #56
+length(fitted_values_nominal) #55
+
+#residual MAPE => mape(actual, predicted)
+#length differ, removed last value of original retail_GDP
+mape(retail_GDP[1:55], fitted_values_nominal) #residual MAPE
+```
+From the plot of both the (nominal) retail GDP and real GDP, we can see that the VAR(1) model has made pretty good predictions since the blue dashed line (fitted values/predictions) more or less overlap with the black lines (original observations). The residuals for both plot also has a mean centered at 0, and the variance of the residuals is also more or less constant. 
+
+The ACF/CCF plots of the residuals are well-behaved with White Noise-like behaviour (no strong auto-correlation after lag 0 in ACF plots of residuals), and there is only a significant spike in cross correlation at lag 0 as well, suggesting that the VAR(1) model is a good fit. There is also no evidence of partial auto correlations from the PACF plot of both GDP and real GDP.
+
+Mathematically, we can define the model as follows since the series are simultaneously correlated White Noise Processes:
+
+(nominal) GDP as $Y_t$ and simultaneous Real GDP as $X_t$, where
+
+$$
+\begin{aligned}
+X_t = W_t, Y_t = V_t\\
+\mathrm{Cov}(W_t, V_t) = \boldsymbol \Sigma_t = \begin{bmatrix} 
+       \sigma_1 & \sigma_{1,2}\\
+       \sigma_{2,1}& \sigma_{2}\\
+    \end{bmatrix}\\
+\end{aligned}
+$$, where
+$\sigma_{1,2} = \sigma_{2,1} \neq 0$.
+
+The `summary` table is as follows:
+
+```{r}
+summary(VAR1_model)
+```
+
+# 10-year-ahead predictions for both series
+```{r}
+predict(VAR1_model,n.ahead=10, plot=T)
+plot(predict(VAR1_model,n.ahead=10, plot=T))
+```
+
+# Granger-Casuality Tests
+```{r}
+causality(VAR1_model, cause='retail_real_GDP')
+irf(VAR1_model, ortho=FALSE) %>% plot()
+```
+Rather than using only a bivariate/multivariate model to predict `retail GDP` (we used `real GDP` in this case), there might be better models that could account for the relationships between other (economic variables) and `retail GDP`. A simple Granger-Casuality hypothesis test is performed, and we realized that we could reject the null hypothesis under 90% confidence level that `real GDP` could have Granger-cause (nominal) `retail GDP`. In other words, using other (economic) variables and their corresponding time series data (as external regressors) could help us make better predictions than using only the past values of `retail GDP` alone. Although it is hard to see such pattern from the impulse response plots (i.e., it is hard to observe an strong casuality-like effect for `real GDP` on `retail GDP`), the hypothesis that using other external economic regressors to help better predict `retail GDP` is still valid. Hence, I have decided to try an ARMA-error regression model with various external regressor as follows.
+
+\newpage
+
+# Fitting an ARMA-error regression model for (nominal) GDP ($Y_t$) with simultaneous Real GDP ($X_t$) as the external regressor: 
+```{r, warning=F, message=F}
+#since auto.arima()'s xreg() requires same length,
+#we will only get the real GDP up until 2016 
+retail_real_GDP_2016 = get_cansim_vector( "v41712939", start_time = "1961-01-01", 
+                                     end_time = "2016-12-01") %>% pull(VALUE) %>% 
+  ts( start = 1961, end = 2016)
+#start 1961, ends in 2016
+
+ARMA_error_model = auto.arima(retail_GDP, xreg=retail_real_GDP_2016)
+ARMA_error_model
+
+fitted_values_ARMA = fitted(ARMA_error_model) #predicted/fitted values for nominal
+mape(retail_GDP, fitted_values_ARMA) #residual MAPE for ARMA errors
+```
+We can see that the `auto.arima()` function returns a ARIMA(4,0,0) with AIC=948.38 and AICc=950.71. The MAPE for this model is 0.02894104.
+
+\newpage
+
+
+# Fitting an ARMA-error regression model with other variables:
+
+The different external regressors/variables I have decided to fit the ARMA-error regression model for retail trade (nominal) GDP is as follows:
+
+```{r, warning=F, message=F}
+multifactor_productivity = get_cansim_vector( "v41712888", start_time = "1961-01-01", 
+                                     end_time = "2016-12-01") %>% pull(VALUE) %>% 
+  ts( start = 1961, end = 2016)
+
+labour_productivity = get_cansim_vector( "v41712905", start_time = "1961-01-01", 
+                                     end_time = "2016-12-01") %>% pull(VALUE) %>% 
+  ts( start = 1961, end = 2016)
+
+capital_productivity = get_cansim_vector( "v41712922", start_time = "1961-01-01", 
+                                     end_time = "2016-12-01") %>% pull(VALUE) %>% 
+  ts( start = 1961, end = 2016)
+```
+
+The ARMA-error regression model for each corresponding external regressors for fitting retail trade (nominal) GDP is as follows:
+
+## Using Labour productivity as external regressor:
+```{r, warning=F, message=F}
+ARMA_error_model_labour_productivity = auto.arima(retail_GDP, xreg=labour_productivity)
+ARMA_error_model_labour_productivity
+fitted_labour_productivity = fitted(ARMA_error_model_labour_productivity) 
+#predicted/fitted values for nominal
+mape(retail_GDP, fitted_labour_productivity) #residual MAPE for ARMA errors
+``` 
+
+## Using Capital productivity as external regressor:
+```{r, warning=F, message=F}
+ARMA_error_model_capital_productivity = auto.arima(retail_GDP, xreg=capital_productivity)
+ARMA_error_model_capital_productivity
+fitted_capital_productivity = fitted(ARMA_error_model_capital_productivity) 
+#predicted/fitted values for nominal
+mape(retail_GDP, fitted_capital_productivity) #residual MAPE for ARMA errors
+``` 
+
+## Using Multifactor productivity as external regressor:
+```{r, warning=F, message=F}
+ARMA_error_model_multifactor_productivity = auto.arima(retail_GDP, xreg=multifactor_productivity)
+ARMA_error_model_multifactor_productivity
+fitted_multifactor_productivity = fitted(ARMA_error_model_multifactor_productivity) 
+#predicted/fitted values for nominal
+mape(retail_GDP, fitted_multifactor_productivity) #residual MAPE for ARMA errors
+
+summary(ARMA_error_model_multifactor_productivity)
+```
+
+We can see that `multifactor productivity` has the smallest AIC/AICc values out of the 3 other external regressors (including variable `real GDP`) with AIC=917.25 and AICc=918.07. It also has the smallest MAPE of 0.02412925 or 2.41% . Hence, we will choose this regressor for further analysis and diagnositics.
+
+```{r}
+library(astsa)
+best_model = arima(retail_GDP, xreg =multifactor_productivity , order = c(0,2,2))
+
+#diagonistics
+sarima(retail_GDP, xreg =multifactor_productivity ,0,2,2)
+Box.test(best_model$resid, lag = 24, type = c("Ljung-Box"), fitdf = 8)$p.value
+```
+
+First, we can see from the standardized residual plots that the residuals have a constant mean at around 0 and also has a more or less constant variance, suggesting stationarity. The ACF plot of the residuals are all within the 95% confidence intervals,indicating that there is no correlation between the residuals (suggesting a good fit of the model). The Normal Q-Q plot suggests that there are a few extreme outliers (on both end of the tails), making the normality of the residuals to be slightly violated (but the bulk of the residuals are still following a Normal distribution). This indicates that perhaps a transformation like the natural log-transformation could be applied to our time series. Most p-values of the Ljung-Box test are above the 5% blue dashed line, indicating that the
+model has no serial correlation with 95% confidence level (but there are some p-values right on the line itself). Hence, I have decided to use a Ljung-Box test to obtain the final p-value of 0.01320815. This suggests that we failed to reject the null-hypothesis that the data (residuals) are independently distributed, i.e., we have enough evidence to conclude that there is no serial correlations (of the residuals) for this model at the 95% confidence level. Hence the ARMA-error regression model for retail trade (nominal) GDP with `multifactor productivity` as its external regressor is the best model we have.
+
+
+# 10-year-ahead predictions for retail_GDP series using multifactor productivity as external regressor
+```{r}
+sarima.for(retail_GDP, xreg =multifactor_productivity ,p=0,d=2,q=2, newxreg = tail(multifactor_productivity), n.ahead=10)
+```
+
+
+
+
+
+
+
+
