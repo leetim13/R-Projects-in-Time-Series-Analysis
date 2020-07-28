@@ -1,0 +1,246 @@
+---
+title: "Selecting the Optimal Time Series Model using MAE"
+author: "Timothy Lee"
+date: "25/07/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Intro
+The data loaded is a bivariate time series object consisting of two Canadian monthly macroeconomic series.   
+
+Variable `emp` contains the raw (unadjusted) number of employed individuals (in 1,000’s).  
+Variable `gdp` contains the *seasonally adjusted* real GDP, chained to 2012 $’s (in 1,000,000’s).
+
+The goal of this mini project is to determine the best time series model to forecast GDP values using the MAE of the forecasts versus the actual GDP values from the latest year. 
+
+## Exploratory Analysis
+
+```{r, warning=F, message=F, fig.width=15}
+#loading neccessary libraries and data
+library(astsa)
+library(forecast)
+library(vars)
+library(fGarch)
+library(tseries)
+load("emp_gdp_data.Rdata") #data loaded as X object
+
+emp_series = as.ts(X[,1], frequency=12)
+gdp_series = as.ts(X[,2], frequency=12)
+
+#EMP
+plot(emp_series)
+acf2(emp_series)
+plot(decompose(emp_series))
+```
+For the `emp` series, we can see from the original graph, there is a clear increasing upward trend, and based on the ACF plot with very high and non-decreasing ACF values, it seems like it is a random walk process. There is also strong evidence of seasonality from the original series where there are some cyclic "spikes", which is also reflected in the decomposed plot (period of 12 months). Hence, due to the random walk behaviour, we can conclude that the original `emp` series itself is non-stationary and integrated.
+
+```{r, warning=F, message=F, fig.width=15}
+gdp_series = as.ts(X[,2], frequency=12)
+
+#GDP
+plot(gdp_series)
+acf2(gdp_series)
+plot(decompose(gdp_series))
+```
+For the `GDP` series, we can see from the original graph, there is also a clear increasing upward trend, and based on the ACF plot it seems like it is also a random walk process (with very high correlation across all lags). There is also less evidence of seasonality, since this series is already *seasonally adjusted*. Hence, again, due to the random walk behaviour, we can easily conclude that the original `GDP` series itself is non-stationary and integrated.
+
+This integrated behaviour of both series is also reinforced by the `adf` test as follows (where we failed to reject the null-hypthosis of both series being non-stationary):
+
+```{r, warning=F, message=F, fig.width=15}
+tseries::adf.test( emp_series, k= 12)
+tseries::adf.test( gdp_series, k= 12)
+```
+
+Hence, I have performed a first order difference on both series, resulting in a stationary-like cross correlation plot as follows. This suggests that both series are integrated with order of `1`.
+
+```{r, warning=F, message=F, fig.width=15}
+acf(diff(X))
+```
+
+### Addressing seasonality
+Now, I will attempt to address the *seasonality* component of the employment (`emp`) series using the X11 decomposition method, then plotting the original and seasonally adjusted series on the same plot.
+```{r}
+dcmp_X11 = seasonal::seas( emp_series, x11 = "") #new emp series
+
+plot((dcmp_X11))
+lines(emp_series) #overlay original emp series again
+```
+
+## Fitting ARIMA model on GDP
+First, I will fit an `ARIMA` model to the `GDP` series, selecting the model specification by `AIC` (default).
+
+```{r}
+arima_out = forecast::auto.arima( gdp_series, ic = "aic")  
+summary(arima_out)
+```
+
+```{r}
+MAE_arima = mean( abs( gdp_series - fitted(arima_out) ), na.rm = T )
+MAE_arima
+```
+The MAE we get for this ARIMA model purely using the `GDP` series itself is `r MAE_arima`.
+
+The fitted model is $SARIMA(0,1,1)(2,0,0)_{12}$ or could be re-written as:
+$$
+\begin{aligned}
+(1+0.1264B^{12}+0.1851B^{24})\nabla(GDP_t-139.8089t) = (1-0.1697B)W_t
+\end{aligned}
+$$
+
+### Comments on model fit and diagnositics
+```{r}
+gdp_model = sarima(gdp_series, 0,1,1,2,0,0,12) #use sarima for diagnositic plots
+```
+From the standardized residual plots, we can see that the residuals have more or less constant variance and mean (fluctuates at around 0). The ACF plot also don't have any significant autocorrelation, which is good. The Normal QQ Plot also has more or less a good fit, with very little deviations around the tails. All p-values of the Ljung-box are above the 5% significance level, indicating there are no significant auto-correlaion between the residuals (similar to White Noise). Overall, this ARIMA model has a pretty good fit for the series.
+
+## Fitting a regression model with ARIMA errors for `GDP`, with the seasonally adjusted employment as the `external regressor`
+
+Now, I will experiment with with a regression model with ARIMA errors for GDP series, with the seasonally adjusted employment `emp` series as the external regressor. For consistency with the previous ARIMA model, we will use `AIC` as the model selection criteria and also use the MAE of the residuals for comparisons.
+
+
+```{r}
+seas_emp = seasadj(dcmp_X11) #fitted series
+
+xreg_model = auto.arima( gdp_series, xreg = seas_emp, ic = "aic") 
+
+#model summary
+summary(xreg_model)
+```
+
+The MAE for this model is:
+```{r}
+#MAE
+#mae(gdp_series, xreg_model$fitted ) #using library(Metrics)
+mean( abs( gdp_series - fitted(xreg_model) ), na.rm = T )
+```
+
+This fitted model can be re-written as:
+$$
+\begin{aligned}
+(1-0.4697B^{12}+0.1195B^{24})\nabla(GDP_t-120.2946t-12.4354EMP_t) = (1-0.1978B^{12})(1-0.1978B)W_t
+\end{aligned}
+$$
+
+
+## Fitting a bivariate VAR model to `GDP` and the seasonally adjusted employment (`emp`) series
+
+Finally, I will fit a bivariate VAR model to `GDP` and the seasonally adjusted employment (`emp`) series to account for a pontential casuality relationship between the two series. Again, we will also use `AIC` as the model selection criteria and the MAE of the residuals for consistent comparisons.
+
+```{r}
+binded = cbind(gdp_series, seas_emp) #binding both series 
+
+VARselect(binded) #AIC criteria is order 2
+var_model = VAR(binded, 2)
+var_model$varresult$gdp_series
+
+summary(var_model)
+
+```
+
+The MAE for this model is:
+```{r}
+#MAE
+gdp_residuals = var_model$varresult$gdp_series$residuals
+mean(abs(gdp_residuals))
+
+#mean( abs( gdp_series[-(1:2)] - fitted(var_model)[,"gdp_series"] ) )
+```
+Now, we will perform a Granger-causality test to check if employment helps predict GDP.
+
+```{r}
+causality(var_model, cause = "seas_emp")
+```
+The p-value is 0.7597, so we fail to reject the null hypothesis that `seas_emp` (employment series) do not Granger-cause GDP (`gdp_series`), i.e.,  employment might not help predict GDP, beyond the past of using the GDP series itself.
+
+## Conclusion
+
+Hence, the regression model with ARIMA errors for GDP, with the seasonally adjusted employment (`seas_emp`) has the smallest MAE, so we will use this model. This is also consistent with the Granger causality test. Now, we will first fit this model again to all but the last year of data (i.e. exclude the last 12 observations). 
+
+```{r}
+#Arima() model using previous parameter with seas_emp as xreg
+out_sample_model = Arima( gdp_series[1:(length(gdp_series)-12)], order = c(0,1,1), 
+                   seasonal = list( order = c(2,0,1), period = 12),
+                  xreg = seas_emp[1:(length(seas_emp)-12)], include.drift = T )
+
+summary(out_sample_model)
+```
+Then, we will use this model to forecast the last year of GDP data, and report the MAE of the forecasts versus the actual GDP values of
+the last year (out of sample prediction).
+
+```{r}
+#next 12 predictions
+forecasts = forecast(out_sample_model, xreg = seas_emp[length(seas_emp)-(11:0)], h=12)
+predictions = forecasts$mean
+predictions
+
+#plot of forecasts
+plot(forecasts, main="Plot of next 12 observations using external regressors")
+
+#plot of original series
+plot(gdp_series, main="Plot of Original GDP series")
+```
+
+The resulting out-of-sample MAE (using our original last 12 observations minus our predictions) is:
+```{r}
+#out of sample MAE
+mean( abs( gdp_series[ (length(gdp_series)-(11:0)) ] - predictions ) )
+```
+
+This MAE is quite large (larger than our original MAE without leaving out the last 12 observations). Hence, I have decided to repeat the same procedure again, but using the simple ARIMA model this time.
+
+
+```{r}
+#Repeating the same step using simple ARIMA()
+out_arima_simple = forecast::Arima( gdp_series[1:(length(gdp_series)-12)], order = c(0,1,1), 
+                  seasonal = list( order = c(2,0,0), period = 12),
+                 include.drift = T )
+summary(out_arima_simple)
+
+forecast_arima = forecast::forecast(out_arima_simple, h = 12)  
+prediction_arima = forecast_arima$mean
+
+#plot of forecasts
+plot(forecast_arima, main="Plot of next 12 observations using simple ARIMA model")
+
+#plot of original series
+plot(gdp_series, main="Plot of Original GDP series")
+
+
+#Comparisons of the 2 models' last 12 predictions
+as.numeric(predictions) #with emp as external regressor
+as.numeric(prediction_arima) #simple ARIMA
+gdp_series[ (length(gdp_series)-(11:0))] #original last 12 observations
+```
+The resulting MAE of using the simple ARIMA model is:
+```{r}
+#resulting MAE
+mean( abs( gdp_series[ (length(gdp_series)-(11:0)) ] - prediction_arima ) ) 
+```
+This out-of-sample MAE is larger than that of our previous model's MAE of 586.9364 (regression with ARIMA errors using employment series as external regressors). This again concludes that the external regressor model is indeed the optimal model in terms of MAE and the only reason that this model has a relatively high MAE for the out-of-sample prediction is only due to the nature of our observations (especially the last 12 observations), which is not easily captured with any of our above models.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
